@@ -64,11 +64,13 @@ database_export.json
 Thumbs.db
 *.md.tmp
 
-# --- Hermes / агентские артефакты (если случайно попали) ---
+# --- агентские артефакты (если случайно попали) ---
 .hermes/
 .cache/
 .agents/
 docs/
+DOMAIN.md
+AGENTS.md
 
 # --- Node (если появится фронтенд) ---
 node_modules/
