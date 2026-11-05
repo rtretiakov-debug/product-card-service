@@ -67,6 +67,8 @@ Thumbs.db
 # --- Hermes / агентские артефакты (если случайно попали) ---
 .hermes/
 .cache/
+.agents/
+docs/
 
 # --- Node (если появится фронтенд) ---
 node_modules/
