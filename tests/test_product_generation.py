@@ -294,6 +294,31 @@ def test_product_form_mentions_provider_notice_and_renders_result(
                 assert form_response.status_code == 200
                 assert "# Манометр DM 02" in form_response.text
                 assert "Введённые данные будут переданы" in form_response.text
+                json_response = await client.post(
+                    "/",
+                    data={
+                        "name": "Манометр DM 02",
+                        "manufacturer": "",
+                        "description": "Точное описание",
+                        "specs": '{"диапазон измерений": "0–1,6 МПа"}',
+                        "format": "json",
+                    },
+                )
+                assert json_response.status_code == 200
+                assert '<div class="error">' not in json_response.text
+                for field in (
+                    "seo_title",
+                    "seo_description",
+                    "search_queries",
+                    "commercial_block",
+                    "name",
+                    "manufacturer",
+                    "specs",
+                    "description",
+                ):
+                    assert f"&quot;{field}&quot;:" in json_response.text
+                assert "Манометр DM 02" in json_response.text
+                assert "\\u" not in json_response.text
 
     asyncio.run(check())
 
