@@ -190,7 +190,7 @@ def create_app(provider_factory: ProviderFactory = create_openai_provider) -> Fa
             product = ProductInput.model_validate(payload)
             card = await generate_card(product, request.app.state.provider)
             result = (
-                card.model_dump_json(indent=2, ensure_ascii=False)
+                json.dumps(card.model_dump(), indent=2, ensure_ascii=False)
                 if format == "json"
                 else product_card_to_markdown(card)
             )
