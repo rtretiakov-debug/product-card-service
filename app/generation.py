@@ -41,13 +41,7 @@ class GeneratedFields(BaseModel):
         return value
 
 
-class ProductCard(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    seo_title: str = Field(min_length=1, max_length=70)
-    seo_description: str = Field(min_length=800, max_length=1200)
-    search_queries: list[str] = Field(min_length=3, max_length=5)
-    commercial_block: str = Field(min_length=1)
+class ProductCard(GeneratedFields):
     name: str
     manufacturer: str
     specs: dict[str, str] | Literal[NO_DATA]
