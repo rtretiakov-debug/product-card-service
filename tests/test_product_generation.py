@@ -41,14 +41,20 @@ class ControlledProvider:
 
 
 async def post_product(
-    app: FastAPI, payload: dict[str, object]
+    app: FastAPI,
+    payload: dict[str, object],
+    params: dict[str, str] | None = None,
 ) -> Response:
     async with app.router.lifespan_context(app):
         async with AsyncClient(
             transport=ASGITransport(app=app),
             base_url="http://testserver",
         ) as client:
-            return await client.post("/products/generate", json=payload)
+            return await client.post(
+                "/products/generate",
+                json=payload,
+                params=params or {},
+            )
 
 
 def test_generate_product_card_returns_exact_contract_and_preserves_input(
@@ -226,6 +232,70 @@ def test_generate_product_card_rejects_invalid_json(
 
     assert response.status_code == 502
     assert "не соответствует требованиям" in response.json()["detail"]
+
+
+def test_generate_product_card_supports_markdown_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    app = create_app(
+        provider_factory=lambda _settings: ControlledProvider(
+            json.dumps(valid_generated_fields(), ensure_ascii=False)
+        )
+    )
+
+    response = asyncio.run(
+        post_product(
+            app,
+            {"name": "Манометр", "manufacturer": "", "description": ""},
+            params={"format": "markdown"},
+        )
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/markdown")
+    assert "# Манометр" in response.text
+    assert "## Характеристики" in response.text
+
+
+def test_product_form_mentions_provider_notice_and_renders_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    app = create_app(
+        provider_factory=lambda _settings: ControlledProvider(
+            json.dumps(valid_generated_fields(), ensure_ascii=False)
+        )
+    )
+
+    async def check() -> None:
+        async with app.router.lifespan_context(app):
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://testserver",
+            ) as client:
+                page = await client.get("/")
+                assert page.status_code == 200
+                assert "LLM-провайдеру" in page.text
+                form_response = await client.post(
+                    "/",
+                    data={
+                        "name": "Манометр DM 02",
+                        "manufacturer": "",
+                        "description": "Точное описание",
+                        "specs": '{"диапазон измерений": "0–1,6 МПа"}',
+                        "format": "markdown",
+                    },
+                )
+                assert form_response.status_code == 200
+                assert "# Манометр DM 02" in form_response.text
+                assert "Введённые данные будут переданы" in form_response.text
+
+    asyncio.run(check())
 
 
 @pytest.mark.parametrize(
