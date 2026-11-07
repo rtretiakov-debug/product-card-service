@@ -2,32 +2,52 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
-from openai import AsyncOpenAI
+from fastapi import FastAPI, HTTPException, Request
 
+from app.generation import (
+    CompletionProvider,
+    GenerationError,
+    ProductCard,
+    ProviderError,
+    ProviderFactory,
+    create_openai_provider,
+    generate_card,
+)
+from app.product import ProductInput
 from app.settings import load_settings
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     settings = load_settings()
-    application.state.provider = AsyncOpenAI(
-        api_key=settings.openai_api_key.get_secret_value(),
-        base_url=str(settings.openai_base_url),
-    )
-    application.state.model = settings.openai_model
+    provider_factory: ProviderFactory = application.state.provider_factory
+    provider: CompletionProvider = provider_factory(settings)
+    application.state.provider = provider
     try:
         yield
     finally:
-        await application.state.provider.close()
+        await provider.close()
 
 
-def create_app() -> FastAPI:
+def create_app(provider_factory: ProviderFactory = create_openai_provider) -> FastAPI:
     application = FastAPI(title="Product Card Service", lifespan=lifespan)
+    application.state.provider_factory = provider_factory
 
     @application.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @application.post("/products/generate", response_model=ProductCard)
+    async def generate_product_card(
+        product: ProductInput,
+        request: Request,
+    ) -> ProductCard:
+        try:
+            return await generate_card(product, request.app.state.provider)
+        except ProviderError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        except GenerationError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
 
     return application
 
