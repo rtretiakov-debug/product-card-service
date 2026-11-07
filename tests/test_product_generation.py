@@ -1,5 +1,6 @@
 import asyncio
 import json
+from html.parser import HTMLParser
 
 import pytest
 from fastapi import FastAPI
@@ -40,15 +41,51 @@ class ControlledProvider:
         pass
 
 
+class FormResultParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.result: str | None = None
+        self._inside_result = False
+        self._result_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "pre" and self.result is None:
+            self._inside_result = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "pre" and self._inside_result:
+            self.result = "".join(self._result_parts)
+            self._inside_result = False
+
+    def handle_data(self, data: str) -> None:
+        if self._inside_result:
+            self._result_parts.append(data)
+
+
 async def post_product(
-    app: FastAPI, payload: dict[str, object]
+    app: FastAPI,
+    payload: dict[str, object],
+    params: dict[str, str] | None = None,
 ) -> Response:
     async with app.router.lifespan_context(app):
         async with AsyncClient(
             transport=ASGITransport(app=app),
             base_url="http://testserver",
         ) as client:
-            return await client.post("/products/generate", json=payload)
+            return await client.post(
+                "/products/generate",
+                json=payload,
+                params=params or {},
+            )
+
+
+async def post_form(app: FastAPI, data: dict[str, str]) -> Response:
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            return await client.post("/", data=data)
 
 
 def test_generate_product_card_returns_exact_contract_and_preserves_input(
@@ -226,6 +263,201 @@ def test_generate_product_card_rejects_invalid_json(
 
     assert response.status_code == 502
     assert "не соответствует требованиям" in response.json()["detail"]
+
+
+def test_generate_product_card_supports_markdown_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    app = create_app(
+        provider_factory=lambda _settings: ControlledProvider(
+            json.dumps(valid_generated_fields(), ensure_ascii=False)
+        )
+    )
+
+    response = asyncio.run(
+        post_product(
+            app,
+            {"name": "Манометр", "manufacturer": "", "description": ""},
+            params={"format": "markdown"},
+        )
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/markdown")
+    assert "# Манометр" in response.text
+    assert "## Характеристики" in response.text
+
+
+def test_product_form_mentions_provider_notice_and_renders_markdown_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    app = create_app(
+        provider_factory=lambda _settings: ControlledProvider(
+            json.dumps(valid_generated_fields(), ensure_ascii=False)
+        )
+    )
+
+    async def check() -> None:
+        async with app.router.lifespan_context(app):
+            async with AsyncClient(
+                transport=ASGITransport(app=app),
+                base_url="http://testserver",
+            ) as client:
+                page = await client.get("/")
+                assert page.status_code == 200
+                assert "LLM-провайдеру" in page.text
+                form_data = {
+                    "name": "Манометр DM 02",
+                    "manufacturer": "",
+                    "description": "Точное описание",
+                    "specs": '{"диапазон измерений": "0–1,6 МПа"}',
+                }
+                form_response = await client.post(
+                    "/",
+                    data={**form_data, "format": "markdown"},
+                )
+                assert form_response.status_code == 200
+                assert "# Манометр DM 02" in form_response.text
+                assert "Введённые данные будут переданы" in form_response.text
+
+    asyncio.run(check())
+
+
+def test_product_form_returns_full_json_card_with_cyrillic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    app = create_app(
+        provider_factory=lambda _settings: ControlledProvider(
+            json.dumps(valid_generated_fields(), ensure_ascii=False)
+        )
+    )
+
+    response = asyncio.run(
+        post_form(
+            app,
+            {
+                "name": "Манометр DM 02",
+                "manufacturer": "",
+                "description": "Исходное описание прибора.",
+                "specs": '{"диапазон измерений": "0–1,6 МПа", "точность": ""}',
+                "format": "json",
+            },
+        )
+    )
+
+    assert response.status_code == 200
+    assert '<div class="error">' not in response.text
+    assert "Манометр DM 02" in response.text
+    assert "диапазон измерений" in response.text
+    assert "\\u" not in response.text
+
+    parser = FormResultParser()
+    parser.feed(response.text)
+    assert parser.result is not None
+    result = json.loads(parser.result)
+
+    assert set(result) == {
+        "seo_title",
+        "seo_description",
+        "search_queries",
+        "commercial_block",
+        "name",
+        "manufacturer",
+        "specs",
+        "description",
+    }
+    assert result["seo_title"] == "Манометр DM 02"
+    assert result["seo_description"] == valid_generated_fields()["seo_description"]
+    assert result["search_queries"] == valid_generated_fields()["search_queries"]
+    assert result["commercial_block"] == valid_generated_fields()["commercial_block"]
+    assert result["name"] == "Манометр DM 02"
+    assert result["manufacturer"] == "«данных нет»"
+    assert result["specs"] == {
+        "диапазон измерений": "0–1,6 МПа",
+        "точность": "«данных нет»",
+    }
+    assert result["description"] == "Исходное описание прибора."
+
+
+def test_product_form_shows_validation_error_without_success_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    app = create_app(provider_factory=lambda _settings: ControlledProvider())
+
+    response = asyncio.run(
+        post_form(
+            app,
+            {
+                "name": "Манометр",
+                "manufacturer": "",
+                "description": "",
+                "specs": '["не объект"]',
+                "format": "json",
+            },
+        )
+    )
+
+    assert response.status_code == 200
+    assert "Поле specs должно быть JSON-объектом." in response.text
+    assert '<div class="error">' in response.text
+    assert '<div class="result">' not in response.text
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (
+            ProviderError("Ошибка при обращении к LLM-провайдеру."),
+            "Ошибка при обращении к LLM-провайдеру.",
+        ),
+        (
+            GenerationError(
+                "Недостаточно данных для достоверной генерации карточки."
+            ),
+            "Недостаточно данных для достоверной генерации карточки.",
+        ),
+    ],
+)
+def test_product_form_shows_generation_error_without_success_result(
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    message: str,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    app = create_app(
+        provider_factory=lambda _settings: ControlledProvider(error=error)
+    )
+
+    response = asyncio.run(
+        post_form(
+            app,
+            {
+                "name": "Манометр",
+                "manufacturer": "",
+                "description": "",
+                "format": "json",
+            },
+        )
+    )
+
+    assert response.status_code == 200
+    assert message in response.text
+    assert '<div class="error">' in response.text
+    assert '<div class="result">' not in response.text
 
 
 @pytest.mark.parametrize(
