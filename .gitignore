@@ -65,12 +65,15 @@ Thumbs.db
 *.md.tmp
 
 # --- агентские артефакты (если случайно попали) ---
+.claude/
 .hermes/
 .cache/
 .agents/
 docs/
-DOMAIN.md
+GLOSSARY.md
 AGENTS.md
+CODING_STANDARDS.md
+customer-requirements.md
 
 # --- Node (если появится фронтенд) ---
 node_modules/
