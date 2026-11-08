@@ -1,4 +1,5 @@
 import json
+import logging
 from collections.abc import Callable
 from typing import Literal, Protocol
 
@@ -8,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from app.product import NO_DATA, ProductInput
 from app.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class ProviderError(RuntimeError):
@@ -124,15 +127,58 @@ def create_openai_provider(settings: Settings) -> OpenAICompletionProvider:
     )
 
 
+def _validation_error_message(detail: dict[str, object]) -> str:
+    error_type = detail["type"]
+    context = detail.get("ctx", {})
+    if not isinstance(context, dict):
+        context = {}
+
+    if error_type == "string_too_long":
+        return f"превышена максимальная длина ({context.get('max_length')} символов)"
+    if error_type == "string_too_short":
+        return f"длина меньше минимума ({context.get('min_length')} символов)"
+    if error_type == "too_short":
+        return f"недостаточно элементов (минимум {context.get('min_length')})"
+    if error_type == "too_long":
+        return f"слишком много элементов (максимум {context.get('max_length')})"
+    if error_type == "extra_forbidden":
+        return "неожиданное поле"
+    if error_type == "value_error":
+        cause = str(context.get("error", ""))
+        if cause == "must not be blank":
+            return "значение не может быть пустым"
+        if cause == "search queries must not be blank":
+            return "поисковые запросы не могут быть пустыми"
+    return "значение не соответствует требованиям"
+
+
 async def generate_card(
     product: ProductInput,
     provider: CompletionProvider,
 ) -> ProductCard:
     try:
-        generated = GeneratedFields.model_validate(
-            json.loads(await provider.complete(product))
+        response = await provider.complete(product)
+        generated_data = json.loads(response)
+    except json.JSONDecodeError as error:
+        logger.warning(
+            "Результат LLM-провайдера не соответствует требованиям к карточке. "
+            "Структура ответа: некорректный JSON."
         )
-    except (json.JSONDecodeError, ValidationError) as error:
+        raise GenerationError(
+            "Результат LLM-провайдера не соответствует требованиям к карточке."
+        ) from error
+
+    try:
+        generated = GeneratedFields.model_validate(generated_data)
+    except ValidationError as error:
+        for detail in error.errors(include_input=False):
+            field = ".".join(str(part) for part in detail["loc"]) or "ответ"
+            logger.warning(
+                "Результат LLM-провайдера не соответствует требованиям к карточке. "
+                "Поле «%s»: %s",
+                field,
+                _validation_error_message(detail),
+            )
         raise GenerationError(
             "Результат LLM-провайдера не соответствует требованиям к карточке."
         ) from error
