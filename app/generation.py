@@ -143,6 +143,14 @@ def _validation_error_message(detail: dict[str, object]) -> str:
         return f"слишком много элементов (максимум {context.get('max_length')})"
     if error_type == "extra_forbidden":
         return "неожиданное поле"
+    if error_type == "missing":
+        return "обязательное поле отсутствует"
+    if error_type == "string_type":
+        return "ожидалась строка"
+    if error_type == "list_type":
+        return "ожидался список"
+    if error_type in {"dict_type", "model_type"}:
+        return "ожидался JSON-объект"
     if error_type == "value_error":
         cause = str(context.get("error", ""))
         if cause == "must not be blank":
