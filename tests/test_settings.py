@@ -123,8 +123,9 @@ def test_health_endpoint_starts_with_valid_provider_configuration(
 
 
 def test_startup_fails_for_missing_provider_configuration(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.chdir(tmp_path)
     clear_provider_settings(monkeypatch)
 
     with pytest.raises(ConfigurationError, match="Invalid application configuration"):
