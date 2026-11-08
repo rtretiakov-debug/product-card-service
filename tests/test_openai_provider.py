@@ -71,4 +71,4 @@ def test_provider_sends_max_tokens_limit() -> None:
     request_body = asyncio.run(run_test())
 
     assert request_body["model"] == "test-model"
-    assert request_body["max_tokens"] == 16_000
+    assert request_body["max_tokens"] == 50_000
