@@ -224,23 +224,71 @@ def test_generate_product_card_accepts_inclusive_content_boundaries(
 
 
 @pytest.mark.parametrize(
-    "fields",
+    ("fields", "expected_field", "expected_reason"),
     [
-        {**valid_generated_fields(), "seo_title": "Т" * 71},
-        {**valid_generated_fields(), "seo_description": "О" * 799},
-        {**valid_generated_fields(), "seo_description": "О" * 1201},
-        {**valid_generated_fields(), "search_queries": ["один", "два"]},
-        {
-            **valid_generated_fields(),
-            "search_queries": ["запрос"] * 6,
-        },
-        {**valid_generated_fields(), "unexpected": "field"},
-        {**valid_generated_fields(), "search_queries": ["", "два", "три"]},
+        (
+            {**valid_generated_fields(), "seo_title": "Т" * 71},
+            "seo_title",
+            "превышена максимальная длина (70 символов)",
+        ),
+        (
+            {**valid_generated_fields(), "seo_description": "О" * 799},
+            "seo_description",
+            "длина меньше минимума (800 символов)",
+        ),
+        (
+            {**valid_generated_fields(), "seo_description": "О" * 1201},
+            "seo_description",
+            "превышена максимальная длина (1200 символов)",
+        ),
+        (
+            {**valid_generated_fields(), "search_queries": ["один", "два"]},
+            "search_queries",
+            "недостаточно элементов (минимум 3)",
+        ),
+        (
+            {
+                **valid_generated_fields(),
+                "search_queries": ["запрос"] * 6,
+            },
+            "search_queries",
+            "слишком много элементов (максимум 5)",
+        ),
+        (
+            {**valid_generated_fields(), "unexpected": "field"},
+            "unexpected",
+            "неожиданное поле",
+        ),
+        (
+            {**valid_generated_fields(), "search_queries": ["", "два", "три"]},
+            "search_queries",
+            "поисковые запросы не могут быть пустыми",
+        ),
+        (
+            {
+                **valid_generated_fields(),
+                "search_queries": ["первый", 2, "третий"],
+            },
+            "search_queries.1",
+            "ожидалась строка",
+        ),
+        (
+            {
+                key: value
+                for key, value in valid_generated_fields().items()
+                if key != "commercial_block"
+            },
+            "commercial_block",
+            "обязательное поле отсутствует",
+        ),
     ],
 )
 def test_generate_product_card_rejects_out_of_contract_content(
     monkeypatch: pytest.MonkeyPatch,
     fields: dict[str, object],
+    expected_field: str,
+    expected_reason: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
@@ -259,10 +307,44 @@ def test_generate_product_card_rejects_out_of_contract_content(
     assert response.json()["detail"] == (
         "Результат LLM-провайдера не соответствует требованиям к карточке."
     )
+    assert expected_field in caplog.text
+    assert expected_reason in caplog.text
+
+
+def test_generate_product_card_logs_every_invalid_field(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    fields = valid_generated_fields()
+    fields["seo_title"] = "Т" * 71
+    fields["seo_description"] = "О" * 799
+    app = create_app(
+        provider_factory=lambda _settings: ControlledProvider(
+            json.dumps(fields, ensure_ascii=False)
+        )
+    )
+
+    response = asyncio.run(
+        post_product(
+            app,
+            {"name": "Манометр", "manufacturer": "", "description": ""},
+        )
+    )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == (
+        "Результат LLM-провайдера не соответствует требованиям к карточке."
+    )
+    assert "seo_title" in caplog.text
+    assert "seo_description" in caplog.text
 
 
 def test_generate_product_card_rejects_invalid_json(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
@@ -278,6 +360,7 @@ def test_generate_product_card_rejects_invalid_json(
 
     assert response.status_code == 502
     assert "не соответствует требованиям" in response.json()["detail"]
+    assert "JSON" in caplog.text
 
 
 def test_generate_product_card_supports_markdown_output(
