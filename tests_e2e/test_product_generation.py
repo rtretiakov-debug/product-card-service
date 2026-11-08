@@ -1,6 +1,60 @@
+import json
+
+import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.main import app as live_app
+from app.main import create_app
+from app.product import ProductInput
+
+
+class InvalidFieldProvider:
+    async def complete(self, product: ProductInput) -> str:
+        return json.dumps(
+            {
+                "seo_title": "Т" * 71,
+                "seo_description": "О" * 800,
+                "search_queries": [
+                    "манометр",
+                    "манометр прибор",
+                    "манометр измерительный",
+                ],
+                "commercial_block": "Проверьте характеристики прибора.",
+            },
+            ensure_ascii=False,
+        )
+
+    async def close(self) -> None:
+        pass
+
+
+def test_invalid_provider_field_returns_502_and_logs_field(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    app = create_app(provider_factory=lambda _settings: InvalidFieldProvider())
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/products/generate",
+            json={
+                "name": "Манометр",
+                "manufacturer": "Завод",
+                "description": "Прибор для измерения давления.",
+            },
+        )
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "detail": (
+            "Результат LLM-провайдера не соответствует требованиям к карточке."
+        )
+    }
+    assert "Поле «seo_title»" in caplog.text
+    assert "превышена максимальная длина (70 символов)" in caplog.text
 
 
 def test_live_provider_generates_product_card_through_http_api() -> None:
@@ -32,7 +86,7 @@ def test_live_provider_generates_product_card_through_http_api() -> None:
         ),
     }
 
-    with TestClient(app) as client:
+    with TestClient(live_app) as client:
         response = client.post(
             "/products/generate",
             json=product,
