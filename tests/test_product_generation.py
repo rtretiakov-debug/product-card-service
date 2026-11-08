@@ -79,6 +79,19 @@ async def post_product(
             )
 
 
+async def post_raw_product(app: FastAPI, content: str) -> Response:
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            return await client.post(
+                "/products/generate",
+                content=content,
+                headers={"content-type": "application/json"},
+            )
+
+
 async def post_form(app: FastAPI, data: dict[str, str]) -> Response:
     async with app.router.lifespan_context(app):
         async with AsyncClient(
@@ -111,6 +124,7 @@ def test_generate_product_card_returns_exact_contract_and_preserves_input(
     )
 
     assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
     result = response.json()
     assert set(result) == {
         "seo_title",
@@ -280,15 +294,75 @@ def test_generate_product_card_supports_markdown_output(
     response = asyncio.run(
         post_product(
             app,
-            {"name": "Манометр", "manufacturer": "", "description": ""},
+            {
+                "name": "Манометр DM 02",
+                "manufacturer": "Завод «Измеритель»",
+                "specs": {"диапазон": "0–1,6 МПа", "точность": "1,5"},
+                "description": "Паспорт прибора.\nТекст без изменений.",
+            },
             params={"format": "markdown"},
         )
     )
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/markdown")
-    assert "# Манометр" in response.text
-    assert "## Характеристики" in response.text
+    assert response.text == (
+        "# Манометр DM 02\n\n"
+        "Производитель: Завод «Измеритель»\n\n"
+        "## Характеристики\n"
+        "- диапазон: 0–1,6 МПа\n"
+        "- точность: 1,5\n\n"
+        "## Описание\n"
+        "Паспорт прибора.\nТекст без изменений.\n\n"
+        "## SEO\n"
+        "Заголовок: Манометр DM 02\n"
+        f"Описание: {valid_generated_fields()['seo_description']}\n"
+        "Поисковые запросы:\n"
+        "- манометр DM 02\n"
+        "- манометр Манотомь\n"
+        "- манометр 0–1,6 МПа\n\n"
+        "Commercial block:\n"
+        "Проверьте характеристики прибора перед заказом."
+    )
+
+
+def test_generate_product_card_rejects_malformed_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    app = create_app(provider_factory=lambda _settings: ControlledProvider())
+
+    response = asyncio.run(post_raw_product(app, "{"))
+
+    assert response.status_code == 422
+    assert any(
+        error["type"] == "json_invalid"
+        for error in response.json()["detail"]
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"manufacturer": "Завод", "description": "Описание"},
+        {"name": " ", "manufacturer": "Завод", "description": "Описание"},
+    ],
+)
+def test_generate_product_card_rejects_invalid_product_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict[str, object],
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    app = create_app(provider_factory=lambda _settings: ControlledProvider())
+
+    response = asyncio.run(post_product(app, payload))
+
+    assert response.status_code == 422
+    assert any("name" in error["loc"] for error in response.json()["detail"])
 
 
 def test_product_form_mentions_provider_notice_and_renders_markdown_result(
