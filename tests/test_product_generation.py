@@ -363,6 +363,80 @@ def test_generate_product_card_rejects_invalid_json(
     assert "JSON" in caplog.text
 
 
+def test_generate_product_card_accepts_json_with_markdown_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    fields = valid_generated_fields()
+    payload = (
+        "Сделал карточку для вас.\n\n```json\n"
+        f"{json.dumps(fields, ensure_ascii=False)}\n```\n\n"
+        "Проверьте, пожалуйста."
+    )
+    app = create_app(provider_factory=lambda _settings: ControlledProvider(payload))
+
+    response = asyncio.run(
+        post_product(
+            app,
+            {"name": "Манометр", "manufacturer": "", "description": ""},
+        )
+    )
+
+    assert response.status_code == 200
+    assert response.json()["seo_title"] == fields["seo_title"]
+
+
+def test_generate_product_card_accepts_raw_json_with_explanatory_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    fields = valid_generated_fields()
+    payload = (
+        "Ниже результат:\n"
+        f"{json.dumps(fields, ensure_ascii=False)}\n"
+        "Спасибо."
+    )
+    app = create_app(provider_factory=lambda _settings: ControlledProvider(payload))
+
+    response = asyncio.run(
+        post_product(
+            app,
+            {"name": "Манометр", "manufacturer": "", "description": ""},
+        )
+    )
+
+    assert response.status_code == 200
+    assert response.json()["seo_description"] == fields["seo_description"]
+
+
+def test_generate_product_card_rejects_multiple_json_objects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    fields = valid_generated_fields()
+    payload = (
+        f"{json.dumps(fields, ensure_ascii=False)}\n"
+        f"{json.dumps(fields, ensure_ascii=False)}"
+    )
+    app = create_app(provider_factory=lambda _settings: ControlledProvider(payload))
+
+    response = asyncio.run(
+        post_product(
+            app,
+            {"name": "Манометр", "manufacturer": "", "description": ""},
+        )
+    )
+
+    assert response.status_code == 502
+    assert "не соответствует требованиям" in response.json()["detail"]
+
+
 def test_generate_product_card_supports_markdown_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
