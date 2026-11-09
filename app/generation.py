@@ -1,7 +1,8 @@
 import json
 import logging
+import re
 from collections.abc import Callable
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from openai import APIError, AsyncOpenAI
 from openai.types.chat import ChatCompletion
@@ -270,6 +271,40 @@ def _validation_error_message(detail: dict[str, object]) -> str:
     return "значение не соответствует требованиям"
 
 
+def _extract_single_json_object(raw_response: str) -> dict[str, Any]:
+    if not raw_response or not raw_response.strip():
+        raise json.JSONDecodeError("empty response", raw_response, 0)
+
+    stripped = raw_response.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.DOTALL | re.IGNORECASE)
+    if fenced is not None:
+        stripped = fenced.group(1).strip()
+
+    decoder = json.JSONDecoder()
+    candidates: list[tuple[int, dict[str, Any], int]] = []
+
+    for index, character in enumerate(stripped):
+        if character != "{":
+            continue
+        try:
+            parsed, consumed = decoder.raw_decode(stripped[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            candidates.append((index, parsed, consumed))
+
+    if not candidates:
+        raise json.JSONDecodeError("no JSON object found", stripped, 0)
+
+    selected_start, selected_object, selected_consumed = candidates[0]
+    for next_start, _, _ in candidates[1:]:
+        if next_start < selected_start + selected_consumed:
+            continue
+        raise ValueError("Несколько JSON-объектов в ответе LLM-провайдера.")
+
+    return selected_object
+
+
 async def generate_card(
     product: ProductInput,
     provider: CompletionProvider,
@@ -277,8 +312,8 @@ async def generate_card(
     response = await provider.complete(product)
 
     try:
-        generated_data = json.loads(response)
-    except json.JSONDecodeError as error:
+        generated_data = _extract_single_json_object(response)
+    except (json.JSONDecodeError, ValueError) as error:
         logger.warning(
             "Результат LLM-провайдера не соответствует требованиям к карточке. "
             "Структура ответа: некорректный JSON."
